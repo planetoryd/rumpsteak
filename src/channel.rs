@@ -1,4 +1,6 @@
-use futures::{channel::mpsc, Sink, Stream};
+use futures::{channel::mpsc, Future, Sink, SinkExt, Stream};
+use futures_util::StreamExt;
+use thiserror::Error;
 use std::{
     pin::Pin,
     task::{Context, Poll},
@@ -91,3 +93,39 @@ impl<S: Unpin, R: Stream + Unpin> Stream for Bidirectional<S, R> {
         R::poll_next(self.receiver(), cx)
     }
 }
+
+pub trait Sending<Item> {
+    type Fut<'x>: Future<Output = Result<(), Self::Error>>
+    where
+        Self: 'x;
+    type Error;
+    fn send(&mut self, item: Item) -> Self::Fut<'_>;
+}
+
+pub trait Recving<Item> {
+    type Fut<'x>: Future<Output = Result<Option<Item>, Self::Error>>
+    where
+        Self: 'x;
+    type Error;
+    fn recv(&mut self) -> Self::Fut<'_>;
+}
+
+impl<I, T: Sink<I> + Unpin> Sending<I> for T {
+    type Fut<'x> = futures_util::sink::Send<'x, Self, I> where T: 'x;
+    type Error = <Self as Sink<I>>::Error;
+    fn send(&mut self, item: I) -> Self::Fut<'_> {
+        SinkExt::send(self, item)
+    }
+}
+impl<I, T: Stream<Item = I> + Unpin> Recving<I> for T {
+    type Fut<'x> = impl Future<Output = Result<Option<I>, Self::Error>> where T: 'x;
+    type Error = EmptyErr;
+    fn recv(&mut self) -> Self::Fut<'_> {
+        async move { Result::<_, _>::Ok(StreamExt::next(self).await) }
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("never happens")]
+pub struct EmptyErr;
+
