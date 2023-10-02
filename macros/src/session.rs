@@ -49,7 +49,6 @@ fn aug_test() {
         &k,
     );
     println!("{}", t.to_token_stream());
-
 }
 
 fn augment_type(mut ty: &mut Type, exclude: &HashSet<Ident>, sattr: SessionAttr, global: &Global) {
@@ -322,7 +321,7 @@ fn session_enum(mut input: ItemEnum, sattr: SessionAttr, global: &Global) -> Res
     Ok(quote!(#input #output))
 }
 
-pub fn session(attr: SessionAttr, input: TokenStream, k: &Global) -> Result<TokenStream> {
+pub(crate) fn session(attr: SessionAttr, input: TokenStream, k: &Global) -> Result<TokenStream> {
     match parse2::<Item>(input.clone()) {
         Ok(item) => match item {
             Item::Type(input) => Ok(session_type(input, attr, k)),

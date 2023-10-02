@@ -1,6 +1,7 @@
 #![feature(impl_trait_in_assoc_type)]
 #![feature(associated_type_defaults)]
 #![feature(decl_macro)]
+#![allow(unused)]
 
 pub mod channel;
 pub mod serialize;
@@ -20,13 +21,11 @@ use thiserror::Error;
 pub type SendError<C, L> = <C as Sending<L>>::Error;
 
 #[derive(Debug, Error)]
-pub enum ReceiveError<E> {
+pub enum ReceiveError {
     #[error("receiver stream is empty")]
     EmptyStream,
     #[error("received message with an unexpected type")]
     UnexpectedType,
-    #[error("receiver error")]
-    Error(#[from] E),
 }
 
 /// The channel is capable of sending L
@@ -40,14 +39,14 @@ pub trait Message<L>: Sized {
     fn downcast(self) -> Result<L, Self>;
 }
 
-impl<L> Message<L> for L {
-    fn downcast(self) -> Result<L, Self> {
-        Ok(self)
-    }
-    fn upcast(label: L) -> Self {
-        label
-    }
-}
+// impl<L> Message<L> for L {
+//     fn downcast(self) -> Result<L, Self> {
+//         Ok(self)
+//     }
+//     fn upcast(label: L) -> Self {
+//         label
+//     }
+// }
 
 pub trait Role {}
 
@@ -68,7 +67,7 @@ pub struct State<'r, R: Role> {
 
 impl<'r, R: Role> State<'r, R> {
     #[inline]
-    fn new(role: &'r mut R) -> Self {
+    pub fn new(role: &'r mut R) -> Self {
         Self { role }
     }
 }
@@ -98,6 +97,10 @@ impl<'k, Sel: Role, Other> PartialDual<'k, Sel, Other> for End<'k, Sel> {
     type Dual<Continuation: FromState<'k, Role = Other>> = Continuation;
 }
 
+impl<'k, Sel: Role, Other: Role + 'k> FullDual<'k, Sel, Other> for End<'k, Sel> {
+    type Dual = End<'k, Other>;
+}
+
 impl<'r, R: Role> FromState<'r> for End<'r, R> {
     type Role = R;
 
@@ -121,23 +124,39 @@ pub trait PartialDual<'q, A, B>: FromState<'q, Role = A> {
 }
 
 /// This structure represents a protocol which next action is to send.
-pub struct Send<'q, Sender: Role, Receiver, L, S: FromState<'q, Role = Sender>> {
+pub struct Send<'q, Sender: Role, Receiver, Chan, S: FromState<'q, Role = Sender>> {
     state: State<'q, Sender>,
-    phantom: PhantomData<(Receiver, L, S)>,
+    phantom: PhantomData<(Receiver, Chan, S)>,
 }
 
-impl<'q, Q: Role, R: Role + 'q, L, S: FromState<'q, Role = Q> + FullDual<'q, Q, R>> FullDual<'q, Q, R>
-    for Send<'q, Q, R, L, S>
+impl<'q, Q: Role, R: Role + 'q, L, S: FromState<'q, Role = Q> + FullDual<'q, Q, R>>
+    FullDual<'q, Q, R> for Send<'q, Q, R, L, S>
 where
     <S as FullDual<'q, Q, R>>::Dual: FromState<'q, Role = R>,
 {
     type Dual = Receive<'q, R, Q, L, S::Dual>;
 }
 
-impl<'q, Q: Role, R: Role + 'q, L, S: FromState<'q, Role = Q>> PartialDual<'q, Q, R>
+// impl<'q, Q: Role, R: Role + 'q, L, S: FromState<'q, Role = Q>> PartialDual<'q, Q, R>
+//     for Send<'q, Q, R, L, S>
+// {
+//     type Dual<Continuation: FromState<'q, Role = R>> = Receive<'q, R, Q, L, Continuation>;
+// }
+
+// impl<'q, Q: Role, R: Role + 'q, L, S: FullDual<'q, Q, R>> PartialDual<'q, Q, R>
+//     for Send<'q, Q, R, L, S>
+// where
+//     <S as FullDual<'q, Q, R>>::Dual: FromState<'q, Role = R>,
+// {
+//     type Dual<Continuation: FromState<'q, Role = R>> = Receive<'q, R, Q, L, <S as FullDual<'q, Q, R>>::Dual>;
+// }
+
+impl<'q, Q: Role, R: Role + 'q, L, S: PartialDual<'q, Q, R>> PartialDual<'q, Q, R>
     for Send<'q, Q, R, L, S>
 {
-    type Dual<Continuation: FromState<'q, Role = R>> = Receive<'q, R, Q, L, Continuation>;
+    type Dual<Continuation: FromState<'q, Role = R>> =
+        Receive<'q, R, Q, L, <S as PartialDual<'q, Q, R>>::Dual<Continuation>> where
+        <S as PartialDual<'q, Q, R>>::Dual<Continuation>: FromState<'q, Role = R>;
 }
 
 impl<'q, Q: Role, R, L, S: FromState<'q, Role = Q>> FromState<'q> for Send<'q, Q, R, L, S> {
@@ -152,15 +171,14 @@ impl<'q, Q: Role, R, L, S: FromState<'q, Role = Q>> FromState<'q> for Send<'q, Q
     }
 }
 
-impl<'q, Q: Route<R, C>, R, C, S: FromState<'q, Role = Q>> Send<'q, Q, R, C, S>
+/// Onwire data is determined by [Route<Recver, Channel>]
+/// L can be anything as determined by [Onwire: Message<L>].
+impl<'q, Q: Route<R, C>, R, C, L, S: FromState<'q, Role = Q>> Send<'q, Q, R, (C, L), S>
 where
-    C: Sending<<Q as Route<R, C>>::Onwire> + Unpin, 
+    C: Sending<<Q as Route<R, C>>::Onwire> + Unpin,
 {
     #[inline]
-    pub async fn send<L>(
-        self,
-        label: L,
-    ) -> Result<S, SendError<C, <Q as Route<R, C>>::Onwire>>
+    pub async fn send(self, label: L) -> Result<S, SendError<C, <Q as Route<R, C>>::Onwire>>
     where
         <Q as Route<R, C>>::Onwire: Message<L>,
     {
@@ -179,12 +197,20 @@ pub struct Receive<'q, Q: Role, R, L, S: FromState<'q, Role = Q>> {
     phantom: PhantomData<(R, L, S)>,
 }
 
-impl<'q, Q: Role, R: Role + 'q, L, S: FromState<'q, Role = Q> + FullDual<'q, Q, R>> FullDual<'q, Q, R>
-    for Receive<'q, Q, R, L, S>
+impl<'q, Q: Role, R: Role + 'q, L, S: FromState<'q, Role = Q> + FullDual<'q, Q, R>>
+    FullDual<'q, Q, R> for Receive<'q, Q, R, L, S>
 where
     <S as FullDual<'q, Q, R>>::Dual: FromState<'q, Role = R>,
 {
     type Dual = Send<'q, R, Q, L, S::Dual>;
+}
+
+impl<'q, Q: Role, R: Role + 'q, L, S: PartialDual<'q, Q, R>> PartialDual<'q, Q, R>
+    for Receive<'q, Q, R, L, S>
+{
+    type Dual<Continuation: FromState<'q, Role = R>> =
+        Send<'q, R, Q, L, <S as PartialDual<'q, Q, R>>::Dual<Continuation>> where
+        <S as PartialDual<'q, Q, R>>::Dual<Continuation>: FromState<'q, Role = R>;
 }
 
 impl<'q, Q: Role, R, L, S: FromState<'q, Role = Q>> FromState<'q> for Receive<'q, Q, R, L, S> {
@@ -199,16 +225,15 @@ impl<'q, Q: Role, R, L, S: FromState<'q, Role = Q>> FromState<'q> for Receive<'q
     }
 }
 
-impl<'q, R: Route<S, C>, S: Role, C, N: FromState<'q, Role = R>> Receive<'q, R, S, C, N>
+impl<'q, R: Route<S, C>, S: Role, C, L, N: FromState<'q, Role = R>> Receive<'q, R, S, (C, L), N>
 where
     C: Recving<<R as Route<S, C>>::Onwire> + Unpin,
 {
     #[inline]
-    pub async fn receive<L>(
-        self,
-    ) -> Result<(L, N), ReceiveError<<C as Recving<<R as Route<S, C>>::Onwire>>::Error>>
+    pub async fn receive(self) -> Result<(L, N), anyhow::Error>
     where
         <R as Route<S, C>>::Onwire: Message<L>,
+        anyhow::Error: From<<C as Recving<<R as Route<S, C>>::Onwire>>::Error>,
     {
         let message = self.state.role.route().recv().await?;
         let message = message.ok_or(ReceiveError::EmptyStream)?;
@@ -232,18 +257,18 @@ pub trait Choice<'r, Brancher: Role> {
 
 /// Less flexible but convenient. Implementing [ChoiceB] derives [Choice]
 pub trait ChoiceB<'r> {
-    type Selector: Role;
-    type Brancher: Role;
-    type SelectorSession: FromState<'r, Role = Self::Selector>;
-    type BrancherSession: FromState<'r, Role = Self::Brancher>;
+    type SelectorSession: FromState<'r>;
+    type BrancherSession: FromState<'r>;
 }
 
-impl<'r, C: ChoiceB<'r>> Choice<'r, C::Brancher> for C {
+impl<'r, C: ChoiceB<'r>> Choice<'r, <C::BrancherSession as FromState<'r>>::Role> for C {
     type BrancherSession = <Self as ChoiceB<'r>>::BrancherSession;
-    type Selector = <Self as ChoiceB<'r>>::Selector;
+    type Selector = <Self::SelectorSession as FromState<'r>>::Role;
     type SelectorSession = <Self as ChoiceB<'r>>::SelectorSession;
 }
 
+/// Being variant of choices
+/// This is ultimately different from the [relation](Message) between message and its onwire format.
 pub trait ChoiceV<E> {
     fn v(self) -> E;
 }
@@ -253,8 +278,20 @@ pub struct Select<'q, Sel: Role, Br, C> {
     phantom: PhantomData<(Br, C)>,
 }
 
+impl<'q, S: Role, B: Role + 'q, C> FullDual<'q, S, B> for Branch<'q, S, B, C> {
+    type Dual = Select<'q, B, S, C>;
+}
+
 impl<'q, S: Role, B: Role + 'q, C> FullDual<'q, S, B> for Select<'q, S, B, C> {
     type Dual = Branch<'q, B, S, C>;
+}
+
+impl<'q, S: Role, B: Role + 'q, C> PartialDual<'q, S, B> for Select<'q, S, B, C> {
+    type Dual<Continuation: FromState<'q, Role = B>> = Branch<'q, B, S, C>;
+}
+
+impl<'q, S: Role, B: Role + 'q, C> PartialDual<'q, S, B> for Branch<'q, S, B, C> {
+    type Dual<Continuation: FromState<'q, Role = B>> = Select<'q, B, S, C>;
 }
 
 impl<'q, Q: Role, R, C> FromState<'q> for Select<'q, Q, R, C> {
@@ -269,9 +306,9 @@ impl<'q, Q: Role, R, C> FromState<'q> for Select<'q, Q, R, C> {
     }
 }
 
-impl<'q, Chan, Sel: Route<Br, Chan>, Br: Role> Select<'q, Sel, Br, Chan> {
+impl<'q, Chan, Sel: Route<Br, Chan>, Br: Role, C: Choices> Select<'q, Sel, Br, (Chan, C)> {
     #[inline]
-    pub async fn select<C: Choices, V: ChoiceV<C::Repr> + Choice<'q, Br, Selector = Sel>>(
+    pub async fn select<V: ChoiceV<C::Repr> + Choice<'q, Br, Selector = Sel>>(
         self,
         label: V,
     ) -> Result<
@@ -314,25 +351,17 @@ impl<'q, Q: Role, R, C> FromState<'q> for Branch<'q, Q, R, C> {
     }
 }
 
-impl<'q, Chan, Br: Route<Sel, Chan>, Sel: Role + 'q> FullDual<'q, Br, Sel> for Branch<'q, Br, Sel, Chan>
-where
-    Chan: Recving<<Sel as Route<Br, Chan>>::Onwire> + Unpin,
-    Sel: Route<Br, Chan>,
-{
-    type Dual = Select<'q, Sel, Br, Chan>;
-}
-
-impl<'q, Chan, Br: Role + Route<Br, Chan>, Sel: Role + Route<Br, Chan>> Branch<'q, Br, Sel, Chan>
+impl<'q, Chan, Br: Role + Route<Sel, Chan>, C: Choices, Sel: Role + Route<Br, Chan>>
+    Branch<'q, Br, Sel, (Chan, C)>
 where
     Chan: Recving<<Sel as Route<Br, Chan>>::Onwire> + Unpin,
 {
     /// Returns the enum
     #[inline]
-    pub async fn branch<C: Choices>(
-        &mut self,
-    ) -> Result<C::Repr, ReceiveError<<Chan as Recving<<Sel as Route<Br, Chan>>::Onwire>>::Error>>
+    pub async fn branch(&mut self) -> Result<C::Repr, anyhow::Error>
     where
         <Sel as Route<Br, Chan>>::Onwire: Message<C::Repr>,
+        anyhow::Error: From<<Chan as Recving<<Sel as Route<Br, Chan>>::Onwire>>::Error>,
     {
         let message = self.state.role.route().recv().await?;
         let message = message.ok_or(ReceiveError::EmptyStream)?;
@@ -370,15 +399,6 @@ where
 {
     let session = FromState::from_state(State::new(role));
     f(session).await.map(|(output, _)| output)
-}
-
-#[inline]
-pub fn try_session_sync<'r, R: Role, S: FromState<'r, Role = R>, T, E, F>(
-    role: &'r mut R,
-    f: impl FnOnce(S) -> Result<(T, End<'r, R>), E>,
-) -> Result<T, E> {
-    let session = FromState::from_state(State::new(role));
-    f(session).map(|(output, _)| output)
 }
 
 mod private {

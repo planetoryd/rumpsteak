@@ -1,3 +1,4 @@
+#![allow(unused)]
 use std::collections::HashSet;
 
 use proc_macro::TokenStream;
@@ -71,7 +72,7 @@ fn types() -> HashSet<Ident> {
     idents.into_iter().collect()
 }
 
-struct Global {
+pub(crate) struct Global {
     idents: HashSet<Ident>,
 }
 

@@ -4,7 +4,7 @@ use futures::{
     executor, try_join,
 };
 use rumpsteak::{
-    channel::Bidirectional, choiceb, session, try_session, Branch, Choice, ChoiceB, ChoiceV,
+    channel::Bidirectional, session, try_session, Branch, Choice, ChoiceB, ChoiceV,
     Choices, FullDual, End, Message, Receive, Role, Roles, Route, Select, Send,
 };
 use rumpsteak_macros::choices;
@@ -49,16 +49,16 @@ enum RingAChoice {
     CEnd,
 }
 
-choiceb! {
-    CEnd, 'k,
-    B => End, A => End
-}
+// choiceb! {
+//     CEnd, 'k,
+//     B => End, A => End
+// }
 
-choiceb! {
-    CAdd, 'k,
-    B => <Self::BrancherSession as Dual<'k, A, B>>::Dual,
-    A => RingA
-}
+// choiceb! {
+//     CAdd, 'k,
+//     B => <Self::BrancherSession as Dual<'k, A, B>>::Dual,
+//     A => RingA
+// }
 
 async fn ring_a(role: &mut A, mut input: i32) -> Result<()> {
     try_session(role, |mut s: RingA<'_, A>| async {

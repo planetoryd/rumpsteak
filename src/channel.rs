@@ -1,10 +1,11 @@
-use futures::{channel::mpsc, Future, Sink, SinkExt, Stream};
+use futures::{channel::{mpsc, oneshot}, Future, Sink, SinkExt, Stream};
 use futures_util::StreamExt;
-use thiserror::Error;
 use std::{
+    convert::Infallible,
     pin::Pin,
     task::{Context, Poll},
 };
+use thiserror::Error;
 
 pub trait Pair<P: Pair<Self>>: Sized {
     fn pair() -> (Self, P);
@@ -110,22 +111,33 @@ pub trait Recving<Item> {
     fn recv(&mut self) -> Self::Fut<'_>;
 }
 
-impl<I, T: Sink<I> + Unpin> Sending<I> for T {
-    type Fut<'x> = futures_util::sink::Send<'x, Self, I> where T: 'x;
-    type Error = <Self as Sink<I>>::Error;
-    fn send(&mut self, item: I) -> Self::Fut<'_> {
-        SinkExt::send(self, item)
-    }
-}
-impl<I, T: Stream<Item = I> + Unpin> Recving<I> for T {
-    type Fut<'x> = impl Future<Output = Result<Option<I>, Self::Error>> where T: 'x;
-    type Error = EmptyErr;
-    fn recv(&mut self) -> Self::Fut<'_> {
-        async move { Result::<_, _>::Ok(StreamExt::next(self).await) }
+pub macro impl_send( $i:ident, $t:ty ) {
+    impl<$i> Sending<$i> for $t
+    where
+        Self: Sink<$i> + Unpin,
+    {
+        type Fut<'x> = ::futures_util::sink::Send<'x, Self, $i> where Self: 'x;
+        type Error = <Self as Sink<$i>>::Error;
+        fn send(&mut self, item: $i) -> Self::Fut<'_> {
+            SinkExt::send(self, item)
+        }
     }
 }
 
-#[derive(Error, Debug)]
-#[error("never happens")]
-pub struct EmptyErr;
+pub macro impl_recv( $i:ident, $t:ty ) {
+    impl<$i> Recving<$i> for $t
+    where
+        Self: Stream<Item = $i> + Unpin,
+    {
+        type Fut<'x> = impl Future<Output = Result<Option<$i>, Self::Error>> where Self: 'x;
+        type Error = Infallible;
+        fn recv(&mut self) -> Self::Fut<'_> {
+            async move { Result::<_, _>::Ok(StreamExt::next(self).await) }
+        }
+    }
+}
 
+impl_send!(T, mpsc::Sender<T>);
+impl_recv!(T, mpsc::Receiver<T>);
+impl_send!(T, oneshot::Sender<T>);
+impl_recv!(T, oneshot::Receiver<T>);
