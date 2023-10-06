@@ -323,6 +323,24 @@ impl<'q, Chan, Sel: Route<Br, Chan>, Br: Role, C: Choices> Select<'q, Sel, Br, (
         self.state.role.route().send(k).await?;
         Ok(FromState::from_state(self.state))
     }
+
+    #[inline]
+    pub async fn selectc<V: Choice<'q, Br, Selector = Sel>>(
+        self,
+        label: V,
+        to: impl FnOnce(V) -> C::Repr
+    ) -> Result<
+        <V as Choice<'q, Br>>::SelectorSession,
+        SendError<Chan, <Sel as Route<Br, Chan>>::Onwire>,
+    >
+    where
+        Chan: Sending<<Sel as Route<Br, Chan>>::Onwire> + Unpin,
+        <Sel as Route<Br, Chan>>::Onwire: Message<C::Repr>,
+    {
+        let k = Message::upcast(to(label));
+        self.state.role.route().send(k).await?;
+        Ok(FromState::from_state(self.state))
+    }
 }
 
 impl<'q, Q: Role, R, C> private::Session for Select<'q, Q, R, C> {}
